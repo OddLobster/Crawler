@@ -1,10 +1,21 @@
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 from time import sleep
+from dataclasses import dataclass, field
 import httpx
 import datetime
 import validators
 
+
+@dataclass
+class PageInfo:
+    title: str = field(default="")
+    url: str = field(default="")
+    description: str = field(default="")
+    keywords: str = field(default="")
+    headers: list = field(default_factory=list)
+    image_descriptions: list = field(default_factory=list)
+    urls: list = field(default_factory=list)
 
 class DataHandler:
     def __init__(self) -> None:
@@ -36,14 +47,14 @@ class DataHandler:
             if child_domain not in self.urls_visited:
                 child_urls.append(child_domain)
         return child_urls
-
-    def get_data(self, response):
-        meta_tags = self.soup.find_all('meta')
-        title = ""
+    
+    def handle_meta_tag(self, info):
+        page_title = ""
         description = ""
         keywords = []
+
+        meta_tags = self.soup.find_all('meta')
         for meta in meta_tags:
-            print(meta.attrs, )
             if len([x for x in meta.attrs.values() if "description" in x]):
                 if "content" in meta.attrs.keys():
                     description = meta.attrs["content"]
@@ -51,16 +62,48 @@ class DataHandler:
                     description = meta.attrs["value"]
             elif len([x for x in meta.attrs.values() if "title" in x]):
                 if "content" in meta.attrs.keys():
-                    title = meta.attrs["content"]
+                    page_title = meta.attrs["content"]
                 elif "value" in meta.attrs.keys():
-                    title = meta.attrs["value"]
+                    page_title = meta.attrs["value"]
+            elif len([x for x in meta.attrs.values() if "keyword" in x]):
+                if "content" in meta.attrs.keys():
+                    keywords = meta.attrs["content"].split(",")
+                elif "value" in meta.attrs.keys():
+                    keywords = meta.attrs["value"].split(",")
 
+        if page_title == "":
+            page_title = self.soup.find("title").text.strip()
+
+        info.title = page_title
+        info.description = description
+        info.keywords = keywords
+
+    def handle_headers(self, info):
+        header_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+        headers = []
+        for tag in header_tags:
+            headers.extend([header.text.strip() for header in self.soup.find_all(tag)])
+        info.headers = headers
+
+    def handle_img_descriptions(self, info):
+        img_alts = []
+        img_alts.extend([img.get("alt") for img in self.soup.find_all('img')])
+        info.img_alts = img_alts
+
+    def populate_data(self, info):
+    
+        self.handle_meta_tag(info)
+        self.handle_headers(info)
+        self.handle_img_descriptions(info)
+
+    def print_info(info):
         print("Website Data")
-        print(f"Title: {title}")
-        print(f"URL: {response.url}")
-        print(f"Description: {description}")
-        print(f"Keywords: {keywords}")
-        return
+        print(f"Title: {info.page_title}")
+        print(f"URL: {info.url}")
+        print(f"Description: {info.description}")
+        print(f"Keywords: {info.keywords}")
+        print(f"Headers: {info.headers}")
+        print(f"IMG Descriptions: {info.img_alts}")
 
 
 class Crawler:
@@ -83,6 +126,7 @@ class Crawler:
             print(f" | Status Code: {response.status_code}", end="")
             self.handler.urls_visited.add(url)
             if response.status_code == httpx.codes.OK:
+                page_info = PageInfo(url=url)
                 self.handler.init_soup(response)
                 urls_crawled += 1
                 child_urls = self.handler.get_child_urls(response)
@@ -91,7 +135,9 @@ class Crawler:
                         continue
                     self.url_queue.append(x)
 
-                data = self.handler.get_data(response)
+                self.handler.populate_data(page_info)
+
+                print(page_info)
                 
             else:
                 #TODO - Handle Other status codes
