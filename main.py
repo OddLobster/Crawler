@@ -8,7 +8,12 @@ def main():
     db = Database()
 
     c = Crawler(url_database=url_db, crawl_database=db)
-    c.run()
+    c1 = Crawler(url_database=url_db, crawl_database=db)
+    c.start()
+    #c1.start()
+
+    c.join()
+    #c1.join()
 
 if __name__ == "__main__":
     main()
