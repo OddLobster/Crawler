@@ -11,7 +11,8 @@ import threading
 
 ic.disable()
 
-db_lock = threading.Lock()
+url_db_lock = threading.Lock()
+page_db_lock = threading.Lock()
 
 @dataclass
 class PageInfo:
@@ -95,12 +96,12 @@ class DataHandler:
         headers = []
         for tag in header_tags:
             headers.extend([header.text.strip() for header in self.soup.find_all(tag)])
-        info.headers = headers
+        info.headers = list(set(headers))
 
     def handle_img_descriptions(self, info):
-        img_alts = []
-        img_alts.extend([img.get("alt") for img in self.soup.find_all('img')])
-        info.img_alts = img_alts
+        img_alts = set([img.get("alt") for img in self.soup.find_all('img')])
+        img_alts = list(filter(lambda string: string != '', img_alts))
+        info.image_descriptions = img_alts
 
     def populate_data(self, info):
         self.handle_meta_tag(info)
@@ -118,9 +119,9 @@ class DataHandler:
 
     def write_urls_to_db(self):
         if len(self.urls) > 5:
-            db_lock.acquire()
+            url_db_lock.acquire()
             self.url_db.add_urls(self.urls)
-            db_lock.release()
+            url_db_lock.release()
 
 
 class Crawler(threading.Thread):
@@ -138,7 +139,9 @@ class Crawler(threading.Thread):
         self.url_queue.extend(init_urls)
     
     def write_data_to_db(self, data):
-        pass
+        page_db_lock.acquire()
+        self.crawl_db.insert_pages(data)
+        page_db_lock.release()
 
     def run(self) -> None:
         urls_crawled = 0
@@ -154,21 +157,21 @@ class Crawler(threading.Thread):
             info_string += f"Crawler: {self.id} | Crawling {url[:27]+'...' if len(url) > 30 else url :<30}"
         
             try:
-                db_lock.acquire()
+                url_db_lock.acquire()
                 if self.url_db.is_discovered_url(url):
                     info_string += f" Skipped due to duplicate"
-                    db_lock.release()
+                    url_db_lock.release()
                     continue
-                db_lock.release()
+                url_db_lock.release()
                 response = httpx.get(url)
             except:
                 info_string += "Error during HTTPX request"
                 self.handler.urls_visited.add(url)
                 continue
             finally:
-                db_lock.acquire()
+                url_db_lock.acquire()
                 self.url_db.update_discovered_urls([url])
-                db_lock.release()
+                url_db_lock.release()
         
             self.handler.urls_visited.add(url)
             info_string += f" | Status Code: {response.status_code:<3}"
@@ -177,7 +180,7 @@ class Crawler(threading.Thread):
                 self.handler.init_soup(response)
                 urls_crawled += 1
                 child_urls = self.handler.get_child_urls(response)
-                page_info.urls = child_urls
+                page_info.urls = list(set(child_urls))
                 for x in child_urls:
                     if x in self.url_queue:
                         continue
@@ -192,9 +195,9 @@ class Crawler(threading.Thread):
                 data.append(page_info)
             else:
                 #TODO - Handle Other status codes
-                db_lock.acquire()
+                url_db_lock.acquire()
                 self.url_db.set_retry(url, False)
-                db_lock.release()
+                url_db_lock.release()
                 pass
 
             info_string += f" | {len(self.url_queue):<5} | {self.num_runs:<5}"
