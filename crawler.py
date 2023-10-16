@@ -2,11 +2,16 @@ from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 from time import sleep
 from dataclasses import dataclass, field
+from icecream import ic
+from pympler.asizeof import asizeof
 import httpx
 import datetime
 import validators
-from pympler.asizeof import asizeof
 import threading
+
+ic.disable()
+
+db_lock = threading.Lock()
 
 @dataclass
 class PageInfo:
@@ -113,11 +118,13 @@ class DataHandler:
 
     def write_urls_to_db(self):
         if len(self.urls) > 5:
+            db_lock.acquire()
             self.url_db.add_urls(self.urls)
+            db_lock.release()
 
 
 class Crawler(threading.Thread):
-    def __init__(self, url_database, crawl_database, nruns=10, num_seeds_initial=5, write_to_db_interval=100) -> None:
+    def __init__(self, url_database, crawl_database, id, nruns=50, num_seeds_initial=5, write_to_db_interval=100) -> None:
         super(Crawler, self).__init__()
         self.url_queue = []
         self.num_runs = nruns
@@ -125,10 +132,10 @@ class Crawler(threading.Thread):
         self.crawl_db = crawl_database
         self.handler = DataHandler(url_database)
         self.save_db_interval = write_to_db_interval
+        self.id = id
 
         init_urls = self.url_db.get_url(num_seeds_initial)
         self.url_queue.extend(init_urls)
-        print(init_urls)
     
     def write_data_to_db(self, data):
         pass
@@ -138,27 +145,33 @@ class Crawler(threading.Thread):
         data = []
 
         while self.num_runs > 0 and len(self.url_queue) > 0:
+            info_string = ""
             if (urls_crawled + 1) % self.save_db_interval == 0:
                 self.write_data_to_db(data)
                 self.handler.write_urls_to_db()
 
             url = self.url_queue.pop()
-            print(f"Crawling {url[:27]+'...' if len(url) > 30 else url :<30}", end="")
+            info_string += f"Crawler: {self.id} | Crawling {url[:27]+'...' if len(url) > 30 else url :<30}"
         
             try:
+                db_lock.acquire()
                 if self.url_db.is_discovered_url(url):
-                    print(f" Skipped due to duplicate")
+                    info_string += f" Skipped due to duplicate"
+                    db_lock.release()
                     continue
+                db_lock.release()
                 response = httpx.get(url)
             except:
-                print("Error during HTTPX request")
+                info_string += "Error during HTTPX request"
                 self.handler.urls_visited.add(url)
                 continue
             finally:
+                db_lock.acquire()
                 self.url_db.update_discovered_urls([url])
+                db_lock.release()
         
             self.handler.urls_visited.add(url)
-            print(f" | Status Code: {response.status_code:<3}", end="")
+            info_string += f" | Status Code: {response.status_code:<3}"
             if response.status_code == httpx.codes.OK:
                 page_info = PageInfo(url=url)
                 self.handler.init_soup(response)
@@ -173,20 +186,27 @@ class Crawler(threading.Thread):
                 try:
                     self.handler.populate_data(page_info)
                 except:
-                    print("Error while extracting data")
+                    info_string += "Error while extracting data"
                     continue
 
                 data.append(page_info)
             else:
                 #TODO - Handle Other status codes
+                db_lock.acquire()
                 self.url_db.set_retry(url, False)
+                db_lock.release()
                 pass
 
-            print(f" | {len(self.url_queue):<5} | {self.num_runs:<5}")
+            info_string += f" | {len(self.url_queue):<5} | {self.num_runs:<5}"
             self.num_runs -= 1
+            print(info_string)
             sleep(0.33)
-        print(f"Crawled {urls_crawled} urls")
-        print(f"Total Information: {asizeof(data)}")
+
+
+        info_string = ""
+        info_string += f"Crawler: {self.id} | Crawled {urls_crawled} urls\n"
+        info_string += f"Crawler: {self.id} | Total Information: {asizeof(data)}\n"
+        print(info_string)
 
         self.write_data_to_db(data)
         self.handler.write_urls_to_db()
